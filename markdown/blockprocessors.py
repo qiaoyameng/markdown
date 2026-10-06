@@ -477,6 +477,8 @@ class HashHeaderProcessor(BlockProcessor):
             # Create header using named groups from RE
             h = etree.SubElement(parent, 'h%d' % len(m.group('level')))
             h.text = m.group('header').strip()
+            if self.parser.md.strict:
+                self.parser.md.reference_tracker.attach_text(h, 'text', h.text)
             if after:
                 # Insert remaining lines as first block for future parsing.
                 if self.parser.state.isstate('looselist'):
@@ -508,6 +510,8 @@ class SetextHeaderProcessor(BlockProcessor):
             level = 2
         h = etree.SubElement(parent, 'h%d' % level)
         h.text = lines[0].strip()
+        if self.parser.md.strict:
+            self.parser.md.reference_tracker.attach_text(h, 'text', h.text)
         if len(lines) > 2:
             # Block contains additional lines. Add to  master blocks for later.
             blocks.insert(0, '\n'.join(lines[2:]))
@@ -576,10 +580,16 @@ class EmptyBlockProcessor(BlockProcessor):
 
 class ReferenceProcessor(BlockProcessor):
     """ Process link references. """
+    LABEL_CLEANUP_RE = re.compile(r'\s+', re.MULTILINE)
     RE = re.compile(
         r'^[ ]{0,3}\[([^\[\]]*)\]:[ ]*(?:\n[ ]*)?([^\s]+)[ ]*(?:\n[ ]*)?((["\'])(.*)\4[ ]*|\((.*)\)[ ]*)?$',
         re.MULTILINE
     )
+
+    @staticmethod
+    def normalize_label(label: str) -> str:
+        """Apply the parser's reference label normalization rules."""
+        return ReferenceProcessor.LABEL_CLEANUP_RE.sub(' ', label.strip().lower())
 
     def test(self, parent: etree.Element, block: str) -> bool:
         return True
@@ -588,9 +598,15 @@ class ReferenceProcessor(BlockProcessor):
         block = blocks.pop(0)
         m = self.RE.search(block)
         if m:
-            id = m.group(1).strip().lower()
+            raw_id = m.group(1)
+            id = self.normalize_label(raw_id)
             link = m.group(2).lstrip('<').rstrip('>')
             title = m.group(5) or m.group(6)
+            if self.parser.md.strict:
+                line = self.parser.md.reference_tracker.line_for_text(block, m.start(1))
+                self.parser.md.reference_tracker.add_definition(
+                    raw_id.strip(), id, link, title, line
+                )
             self.parser.md.references[id] = (link, title)
             if block[m.end():].strip():
                 # Add any content after match back to blocks as separate block
@@ -626,17 +642,28 @@ class ParagraphProcessor(BlockProcessor):
                 sibling = self.lastChild(parent)
                 if sibling is not None:
                     # Insert after sibling.
+                    if self.parser.md.strict:
+                        self.parser.md.reference_tracker.attach_text(
+                            sibling, 'tail', block, prepend=bool(sibling.tail)
+                        )
                     if sibling.tail:
                         sibling.tail = '{}\n{}'.format(sibling.tail, block)
                     else:
                         sibling.tail = '\n%s' % block
                 else:
                     # Append to parent.text
+                    rendered = block.lstrip()
+                    if self.parser.md.strict:
+                        self.parser.md.reference_tracker.attach_text(
+                            parent, 'text', rendered, prepend=bool(parent.text)
+                        )
                     if parent.text:
                         parent.text = '{}\n{}'.format(parent.text, block)
                     else:
-                        parent.text = block.lstrip()
+                        parent.text = rendered
             else:
                 # Create a regular paragraph
                 p = etree.SubElement(parent, 'p')
                 p.text = block.lstrip()
+                if self.parser.md.strict:
+                    self.parser.md.reference_tracker.attach_text(p, 'text', p.text)

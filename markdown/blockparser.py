@@ -113,7 +113,13 @@ class BlockParser:
             An element tree.
         """
         # Create an `ElementTree` from the lines
+        lines = list(lines)
         self.root = etree.Element(self.md.doc_tag)
+        if self.md.strict:
+            tracker = self.md.reference_tracker
+            tracker.reset_document_sources(lines)
+            self.parseBlocks(self.root, '\n'.join(lines).split('\n\n'))
+            return etree.ElementTree(self.root)
         self.parseChunk(self.root, '\n'.join(lines))
         return etree.ElementTree(self.root)
 
@@ -133,6 +139,14 @@ class BlockParser:
             text: The text to parse.
 
         """
+        if self.md.strict:
+            tracker = self.md.reference_tracker
+            tracker.push_text(text)
+            try:
+                self.parseBlocks(parent, text.split('\n\n'))
+            finally:
+                tracker.pop_text()
+            return
         self.parseBlocks(parent, text.split('\n\n'))
 
     def parseBlocks(self, parent: etree.Element, blocks: list[str]) -> None:
@@ -155,6 +169,25 @@ class BlockParser:
         while blocks:
             for processor in self.blockprocessors:
                 if processor.test(parent, blocks[0]):
-                    if processor.run(parent, blocks) is not False:
-                        # run returns True or None
-                        break
+                    tracker = self.md.reference_tracker
+                    block = blocks[0]
+                    has_root_context = not tracker.has_document_context()
+                    is_context = (
+                        tracker.enabled
+                        and (
+                            has_root_context
+                            or not (
+                                len(blocks) == 1
+                                and tracker.current_text() == block
+                            )
+                        )
+                    )
+                    if is_context:
+                        tracker.push_text(self.lines if has_root_context else block)
+                    try:
+                        if processor.run(parent, blocks) is not False:
+                            # run returns True or None
+                            break
+                    finally:
+                        if is_context:
+                            tracker.pop_text()

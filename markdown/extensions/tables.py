@@ -138,6 +138,8 @@ class TableProcessor(BlockProcessor):
                 c.text = cells[i].strip(' ')
             except IndexError:  # pragma: no cover
                 c.text = ""
+            if self.parser.md.strict and c.text:
+                self.parser.md.reference_tracker.attach_text(c, 'text', c.text)
             if a:
                 if self.config['use_align_attribute']:
                     c.set('align', a)

@@ -33,11 +33,12 @@ from .postprocessors import build_postprocessors
 from .extensions import Extension
 from .serializers import to_html_string, to_xhtml_string
 from .util import BLOCK_LEVEL_ELEMENTS
+from .diagnostics import ReferenceTracker
 
 if TYPE_CHECKING:  # pragma: no cover
     from xml.etree.ElementTree import Element
 
-__all__ = ['Markdown', 'markdown', 'markdownFromFile']
+__all__ = ['Markdown', 'markdown', 'markdownFromFile', 'ReferenceTracker']
 
 
 logger = logging.getLogger('MARKDOWN')
@@ -58,6 +59,7 @@ class Markdown:
         Markdown.stripTopLevelTags (bool): Indicates whether the `doc_tag` should be removed. Default: 'True'.
         Markdown.references (dict[str, tuple[str, str]]): A mapping of link references found in a parsed document
              where the key is the reference name and the value is a tuple of the URL and title.
+        Markdown.diagnostics (ReferenceTracker): Link-reference diagnostics collected when strict parsing is enabled.
         Markdown.htmlStash (util.HtmlStash): The instance of the `HtmlStash` used by an instance of this class.
         Markdown.output_formats (dict[str, Callable[xml.etree.ElementTree.Element]]): A mapping of known output
              formats by name and their respective serializers. Each serializer must be a callable which accepts an
@@ -103,6 +105,7 @@ class Markdown:
                 * `xhtml`: Outputs XHTML style tags. Default.
                 * `html`: Outputs HTML style tags.
             tab_length (int): Length of tabs in the source. Default: `4`
+            strict (bool): Collect link reference diagnostics without altering HTML output. Default: `False`.
 
         """
 
@@ -122,6 +125,9 @@ class Markdown:
         self.build_parser()
 
         self.references: dict[str, tuple[str, str]] = {}
+        self.strict: bool = kwargs.get('strict', False)
+        self.reference_tracker: ReferenceTracker = ReferenceTracker(self.strict)
+        self.reference_diagnostics: ReferenceTracker = self.reference_tracker
         self.htmlStash: util.HtmlStash = util.HtmlStash()
         self.registerExtensions(extensions=kwargs.get('extensions', []),
                                 configs=kwargs.get('extension_configs', {}))
@@ -269,6 +275,8 @@ class Markdown:
         """
         self.htmlStash.reset()
         self.references.clear()
+        self.reference_tracker.reset()
+        self.reference_tracker.enabled = self.strict
 
         for extension in self.registeredExtensions:
             if hasattr(extension, 'reset'):
@@ -345,6 +353,9 @@ class Markdown:
 
         # Fix up the source text
         if not source.strip():
+            self.references.clear()
+            self.reference_tracker.reset()
+            self.reference_tracker.enabled = self.strict
             return ''  # a blank Unicode string
 
         try:
@@ -355,12 +366,23 @@ class Markdown:
             raise
 
         # Split into lines and run the line preprocessors.
+        self.references.clear()
+        self.reference_tracker.reset()
+        self.reference_tracker.enabled = self.strict
         self.lines = source.split("\n")
-        for prep in self.preprocessors:
+        if self.strict:
+            self.reference_tracker.source_line_map = list(range(1, len(self.lines) + 1))
+        for prep_index, prep in enumerate(self.preprocessors):
+            old_lines = self.lines.copy()
             self.lines = prep.run(self.lines)
-
+            if self.strict:
+                prep_name = self.preprocessors._priority[prep_index].name
+                self.reference_tracker.preprocessor_changed_lines(
+                    prep_name, old_lines, self.lines
+                )
         # Parse the high-level elements.
-        root = self.parser.parseDocument(self.lines).getroot()
+        document_lines = self.lines
+        root = self.parser.parseDocument(document_lines).getroot()
 
         # Run the tree-processors
         for treeprocessor in self.treeprocessors:
@@ -390,6 +412,15 @@ class Markdown:
             output = pp.run(output)
 
         return output.strip()
+
+    @property
+    def diagnostics(self) -> ReferenceTracker:
+        """Return diagnostics collected during the most recent conversion."""
+        return self.reference_tracker
+
+    def get_diagnostics(self) -> ReferenceTracker:
+        """Return diagnostics collected during the most recent conversion."""
+        return self.reference_tracker
 
     def convertFile(
         self,

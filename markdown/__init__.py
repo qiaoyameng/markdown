@@ -39,10 +39,10 @@ Modules:
 
 from __future__ import annotations
 
-from .core import Markdown, markdown, markdownFromFile
+from .core import Markdown, ReferenceTracker, markdown, markdownFromFile
 from .__meta__ import __version__, __version_info__  # noqa
 
 # For backward compatibility as some extensions expect it...
 from .extensions import Extension  # noqa
 
-__all__ = ['Markdown', 'markdown', 'markdownFromFile']
+__all__ = ['Markdown', 'ReferenceTracker', 'markdown', 'markdownFromFile']

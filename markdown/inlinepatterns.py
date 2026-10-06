@@ -360,6 +360,19 @@ class EscapeInlineProcessor(InlineProcessor):
 
         char = m.group(1)
         if char in self.md.ESCAPED_CHARS:
+            if self.md.strict and char == '[':
+                inline = self.md.treeprocessors['inline']
+                inline.ignore_reference_span(data, m.start(0), m.end(0))
+                close = data.find(']', m.end(0))
+                if close != -1:
+                    inline.ignore_reference_span(data, m.end(0), close + 1)
+                    next_open = data.find('[', m.end(0))
+                    if next_open != -1:
+                        next_close = data.find(']', next_open)
+                        if next_close != -1:
+                            inline.ignore_reference_span(
+                                data, next_open, next_close + 1
+                            )
             return '{}{}{}'.format(util.STX, ord(char), util.ETX), m.start(0), m.end(0)
         else:
             return None, m.start(0), m.end(0)
@@ -934,6 +947,13 @@ class ReferenceInlineProcessor(LinkInlineProcessor):
     NEWLINE_CLEANUP_RE = re.compile(r'\s+', re.MULTILINE)
 
     RE_LINK = re.compile(r'\s?\[([^\]]*)\]', re.DOTALL | re.UNICODE)
+    reference_type = 'full'
+    is_image_reference = False
+
+    @classmethod
+    def normalize_id(cls, label: str) -> str:
+        """Apply the parser's reference label normalization rules."""
+        return cls.NEWLINE_CLEANUP_RE.sub(' ', label.lower())
 
     def handleMatch(self, m: re.Match[str], data: str) -> tuple[etree.Element | None, int | None, int | None]:
         """
@@ -944,20 +964,55 @@ class ReferenceInlineProcessor(LinkInlineProcessor):
         if not handled:
             return None, None, None
 
-        id, end, handled = self.evalId(data, index, text)
+        self._rejected_full_reference = False
+        id_result = self.evalId(data, index, text)
+        if len(id_result) == 4:
+            id, end, handled, raw_id = id_result
+        else:
+            id, end, handled = id_result
+            raw_id = id
         if not handled:
             return None, None, None
 
         # Clean up line breaks in id
         id = self.NEWLINE_CLEANUP_RE.sub(' ', id)
+        raw_id = self.NEWLINE_CLEANUP_RE.sub(' ', raw_id)
+        if len(id_result) != 4:
+            id = self.normalize_id(id)
+            raw_id = id
+        reference_type = self.reference_type
+        if (
+            reference_type == 'full'
+            and self.normalize_id(raw_id) == self.normalize_id(text)
+        ):
+            reference_type = 'collapsed'
+        if self.md.strict:
+            line = self.md.treeprocessors['inline'].reference_line(m, data, m.start(0))
+            if self.reference_type != 'full':
+                inline = self.md.treeprocessors['inline']
+                if inline.is_rejected_reference(data, m.start(0)):
+                    return None, m.start(0), end
+            self.md.reference_tracker.add_use(
+                raw_id.strip(),
+                id,
+                line,
+                reference_type,
+                self.is_image_reference,
+            )
         if id not in self.md.references:  # ignore undefined refs
+            self._rejected_full_reference = self.reference_type == 'full'
             return None, m.start(0), end
 
         href, title = self.md.references[id]
 
         return self.makeTag(href, title, text), m.start(0), end
 
-    def evalId(self, data: str, index: int, text: str) -> tuple[str | None, int, bool]:
+    def evalId(
+        self,
+        data: str,
+        index: int,
+        text: str,
+    ) -> tuple[str | None, int, bool, str]:
         """
         Evaluate the id portion of `[ref][id]`.
 
@@ -965,13 +1020,15 @@ class ReferenceInlineProcessor(LinkInlineProcessor):
         """
         m = self.RE_LINK.match(data, pos=index)
         if not m:
-            return None, index, False
+            return None, index, False, ''
         else:
             id = m.group(1).lower()
+            raw_id = m.group(1)
             end = m.end(0)
             if not id:
                 id = text.lower()
-        return id, end, True
+                raw_id = text
+        return id, end, True, raw_id
 
     def makeTag(self, href: str, title: str, text: str) -> etree.Element:
         """ Return an `a` [`Element`][xml.etree.ElementTree.Element]. """
@@ -987,14 +1044,18 @@ class ReferenceInlineProcessor(LinkInlineProcessor):
 
 class ShortReferenceInlineProcessor(ReferenceInlineProcessor):
     """Short form of reference: `[google]`. """
-    def evalId(self, data: str, index: int, text: str) -> tuple[str, int, bool]:
+    reference_type = 'short'
+
+    def evalId(self, data: str, index: int, text: str) -> tuple[str, int, bool, str]:
         """Evaluate the id of `[ref]`.  """
 
-        return text.lower(), index, True
+        return self.normalize_id(text), index, True, text
 
 
 class ImageReferenceInlineProcessor(ReferenceInlineProcessor):
     """ Match to a stored reference and return `img` element. """
+    is_image_reference = True
+
     def makeTag(self, href: str, title: str, text: str) -> etree.Element:
         """ Return an `img` [`Element`][xml.etree.ElementTree.Element]. """
         el = etree.Element("img")
@@ -1007,10 +1068,12 @@ class ImageReferenceInlineProcessor(ReferenceInlineProcessor):
 
 class ShortImageReferenceInlineProcessor(ImageReferenceInlineProcessor):
     """ Short form of image reference: `![ref]`. """
-    def evalId(self, data: str, index: int, text: str) -> tuple[str, int, bool]:
+    reference_type = 'short'
+
+    def evalId(self, data: str, index: int, text: str) -> tuple[str, int, bool, str]:
         """Evaluate the id of `[ref]`.  """
 
-        return text.lower(), index, True
+        return self.normalize_id(text), index, True, text
 
 
 class AutolinkInlineProcessor(InlineProcessor):

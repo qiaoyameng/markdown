@@ -86,6 +86,11 @@ class InlineProcessor(Treeprocessor):
         self.md = md
         self.inlinePatterns = md.inlinePatterns
         self.ancestors: list[str] = []
+        self._pattern_reference_source: tuple[object, str, int] | None = None
+        self._rejected_reference_spans: dict[int, list[tuple[int, int]]] = {}
+        self._ignored_reference_spans: dict[int, list[tuple[int, int]]] = {}
+        self._reference_source: tuple[object, str, int] | None = None
+        self._reference_offset = 0
 
     def __makePlaceholder(self, type: str) -> tuple[str, str]:
         """ Generate a placeholder """
@@ -133,9 +138,26 @@ class InlineProcessor(Treeprocessor):
             startIndex = 0
             count = len(self.inlinePatterns)
             while patternIndex < count:
+                previous_data = data
                 data, matched, startIndex = self.__applyPattern(
                     self.inlinePatterns[patternIndex], data, patternIndex, startIndex
                 )
+                if (
+                    self.md.strict
+                    and matched
+                    and data != previous_data
+                    and self._ignored_reference_spans
+                ):
+                    self._transform_reference_spans(previous_data, data)
+                if (
+                    self.md.strict
+                    and matched
+                    and data != previous_data
+                ):
+                    self._transform_rejected_spans(
+                        previous_data,
+                        data,
+                    )
                 if not matched:
                     patternIndex += 1
         return data
@@ -277,12 +299,41 @@ class InlineProcessor(Treeprocessor):
             if exclude.lower() in self.ancestors:
                 return data, False, 0
 
+        if self.md.strict and self._reference_source:
+            self._pattern_reference_source = self._reference_source
+            self._reference_offset = startIndex
+
         if new_style:
             match = None
             # Since `handleMatch` may reject our first match,
             # we iterate over the buffer looking for matches
             # until we can't find any more.
             for match in pattern.getCompiledRegExp().finditer(data, startIndex):
+                if (
+                    self.md.strict
+                    and isinstance(pattern, inlinepatterns.ReferenceInlineProcessor)
+                ):
+                    pattern._rejected_full_reference = False
+                if (
+                    self.md.strict
+                    and isinstance(pattern, inlinepatterns.ReferenceInlineProcessor)
+                    and pattern.reference_type != 'full'
+                    and self.is_rejected_reference(data, match.start(0))
+                ):
+                    startIndex = match.end(0)
+                    match = None
+                    continue
+                if (
+                    self.md.strict
+                    and isinstance(pattern, inlinepatterns.ReferenceInlineProcessor)
+                    and pattern.reference_type != 'full'
+                    and self._is_ignored_reference(data, match.start(0))
+                ):
+                    startIndex = match.end(0)
+                    match = None
+                    continue
+                if self.md.strict:
+                    self._reference_offset = startIndex + match.start(0)
                 node, start, end = pattern.handleMatch(match, data)
                 if start is None or end is None:
                     startIndex += match.end(0)
@@ -302,32 +353,92 @@ class InlineProcessor(Treeprocessor):
             end = match.end(0)
 
         if node is None:
+            if (
+                self.md.strict
+                and isinstance(pattern, inlinepatterns.ReferenceInlineProcessor)
+                and pattern.reference_type == 'full'
+                and getattr(pattern, '_rejected_full_reference', False)
+            ):
+                self._rejected_reference_spans.setdefault(id(data), []).append(
+                    (start, end)
+                )
             return data, True, end
 
         if not isinstance(node, str):
+            if self.md.strict and self._reference_source:
+                source_element, source_attribute, source_offset = (
+                    self._pattern_reference_source or self._reference_source
+                )
+                if getattr(node, 'text', None) is not None:
+                    self.md.reference_tracker.attach_relative_text(
+                        node,
+                        'text',
+                        node.text,
+                        source_element,
+                        source_attribute,
+                        source_offset + start,
+                    )
+                if getattr(node, 'tail', None) is not None:
+                    self.md.reference_tracker.attach_relative_text(
+                        node,
+                        'tail',
+                        node.tail,
+                        source_element,
+                        source_attribute,
+                        source_offset + end - len(node.tail),
+                    )
             if not isinstance(node.text, util.AtomicString):
                 # We need to process current node too
                 for child in [node] + list(node):
                     if not isString(node):
                         if child.text:
+                            if self.md.strict:
+                                child_source = self._pattern_reference_source
+                                if (
+                                    child_source is not None
+                                    and child_source[0] is node
+                                    and child_source[1] == 'text'
+                                ):
+                                    self._reference_source = (
+                                        child,
+                                        'text',
+                                        child_source[2] + start,
+                                    )
+                                else:
+                                    self._reference_source = (child, 'text', 0)
                             self.ancestors.append(child.tag.lower())
                             child.text = self.__handleInline(
                                 child.text, patternIndex + 1
                             )
                             self.ancestors.pop()
                         if child.tail:
+                            if self.md.strict:
+                                child_source = self._pattern_reference_source
+                                if (
+                                    child_source is not None
+                                    and child_source[0] is node
+                                    and child_source[1] == 'tail'
+                                ):
+                                    self._reference_source = (
+                                        child,
+                                        'tail',
+                                        child_source[2] + end,
+                                    )
+                                else:
+                                    self._reference_source = (child, 'tail', 0)
                             child.tail = self.__handleInline(
                                 child.tail, patternIndex
                             )
 
         placeholder = self.__stashNode(node, pattern.type())
+        new_data = data
 
         if new_style:
+            new_data = "{}{}{}".format(data[:start], placeholder, data[end:])
             # Return the index just past the inserted placeholder so the
             # next call scans only the unprocessed tail. Scanning from 0
             # after every match makes repeated inline patterns quadratic.
-            return "{}{}{}".format(data[:start],
-                                   placeholder, data[end:]), True, start + len(placeholder)
+            return new_data, True, start + len(placeholder)
         else:  # pragma: no cover
             return "{}{}{}{}".format(leftData,
                                      match.group(1),
@@ -344,6 +455,82 @@ class InlineProcessor(Treeprocessor):
             parent = self.parent_map.get(parent)
         ancestors.reverse()
         parents.extend(ancestors)
+
+    def reference_line(self, match: re.Match[str], data: str, offset: int) -> int | None:
+        """Return the source line for an inline reference match."""
+        if not self._reference_source:
+            return None
+        element, attribute, source = self._reference_source
+        position = source + self._reference_offset + match.start(0) - offset
+        return self.md.reference_tracker.line_for_inline(element, attribute, position)
+
+    def is_rejected_reference(self, data: str, position: int) -> bool:
+        """Check whether a short match is inside a rejected full reference."""
+        return any(
+            start <= position < end
+            for start, end in self._rejected_reference_spans.get(id(data), [])
+        )
+
+    def _transform_rejected_spans(
+        self,
+        data: str,
+        new_data: str,
+    ) -> None:
+        """Adjust rejected spans after accepted text was replaced by a placeholder."""
+        spans = self._rejected_reference_spans.get(id(data), [])
+        adjusted = []
+        common = 0
+        while (
+            common < min(len(data), len(new_data))
+            and data[-1 - common] == new_data[-1 - common]
+        ):
+            common += 1
+        original_end = len(data) - common
+        new_end = len(new_data) - common
+        for span_start, span_end in spans:
+            if span_start >= original_end:
+                adjusted.append((
+                    span_start - original_end + new_end,
+                    span_end - original_end + new_end,
+                ))
+            else:
+                offset = new_end - original_end
+                adjusted.append((span_start + offset, span_end + offset))
+        self._rejected_reference_spans[id(new_data)] = adjusted
+
+    def ignore_reference_span(self, data: str, start: int, end: int) -> None:
+        """Ignore short references in a parser-escaped span."""
+        self._ignored_reference_spans.setdefault(id(data), []).append((start, end))
+
+    def _transform_reference_spans(self, old: str, new: str) -> None:
+        old_spans = self._ignored_reference_spans.pop(id(old), None)
+        if not old_spans:
+            return
+        new_spans = self._ignored_reference_spans.setdefault(id(new), [])
+        common = 0
+        while (
+            common < min(len(old), len(new))
+            and old[-1 - common] == new[-1 - common]
+        ):
+            common += 1
+        original_end = len(old) - common
+        new_end = len(new) - common
+        for old_start, old_end in old_spans:
+            if old_start >= original_end:
+                offset = new_end - original_end
+                new_spans.append((old_start + offset, old_end + offset))
+            else:
+                new_spans.append((old_start, old_end))
+
+    def _is_ignored_reference(
+        self,
+        data: str,
+        position: int,
+    ) -> bool:
+        return any(
+            span_start <= position < span_end
+            for span_start, span_end in self._ignored_reference_spans.get(id(data), [])
+        )
 
     def run(self, tree: etree.Element, ancestors: list[str] | None = None) -> etree.Element:
         """Apply inline patterns to a parsed Markdown tree.
@@ -364,6 +551,10 @@ class InlineProcessor(Treeprocessor):
 
         """
         self.stashed_nodes: dict[str, etree.Element | str] = {}
+        self._reference_source = None
+        self._pattern_reference_source = None
+        self._rejected_reference_spans.clear()
+        self._ignored_reference_spans.clear()
 
         # Ensure a valid parent list, but copy passed in lists
         # to ensure we don't have the user accidentally change it on us.
@@ -388,6 +579,8 @@ class InlineProcessor(Treeprocessor):
                     self.ancestors.append(child.tag.lower())
                     text = child.text
                     child.text = None
+                    if self.md.strict:
+                        self._reference_source = (child, 'text', 0)
                     lst = self.__processPlaceholders(
                         self.__handleInline(text), child
                     )
@@ -397,6 +590,8 @@ class InlineProcessor(Treeprocessor):
                     insertQueue.append((child, lst))
                     self.ancestors.pop()
                 if child.tail:
+                    if self.md.strict:
+                        self._reference_source = (child, 'tail', 0)
                     tail = self.__handleInline(child.tail)
                     dumby = etree.Element('d')
                     child.tail = None
@@ -411,6 +606,8 @@ class InlineProcessor(Treeprocessor):
                 if len(child):
                     self.parent_map[child] = currElement
                     stack.append((child, self.ancestors[:]))
+                if self.md.strict:
+                    self._reference_source = None
 
             for element, lst in insertQueue:
                 for i, obj in enumerate(lst):
