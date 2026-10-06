@@ -14,6 +14,7 @@ See the [Contributing Guide](contributing.md) for details.
 
 ## [Unreleased]
 
+* Add language-specific SmartyPants quotation modes for English, Chinese, and French.
 * Update serializer to be non-recursive (#1644).
 * Improve ancestor handling in the inline `Treeprocessor` (#1646).
 * Fix issue where inline HTML attributes were rejected if they had `<` or `>` in the attribute (#1647).

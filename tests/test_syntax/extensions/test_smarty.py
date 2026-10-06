@@ -20,6 +20,7 @@ Copyright 2004 Manfred Stienstra (the original version)
 License: BSD (see LICENSE.md for details).
 """
 
+from markdown import Markdown
 from markdown.test_tools import TestCase
 
 
@@ -214,6 +215,102 @@ class TestSmartyCustomSubstitutions(TestCase):
             'Must not be confused with &sbquo;ndash&lsquo;  (\u2013) \u2026 ]</p>'
         )
         self.assertMarkdownRenders(text, html)
+
+
+class TestSmartyLanguage(TestCase):
+
+    default_kwargs = {
+        'extensions': ['smarty'],
+        'extension_configs': {
+            'smarty': {
+                'language': 'en',
+            },
+        },
+    }
+
+    def test_english_example(self):
+        self.assertMarkdownRenders(
+            'She said, "Read the **manual** and run `import "os"` first."',
+            '<p>She said, &ldquo;Read the <strong>manual</strong> and run '
+            '<code>import "os"</code> first.&rdquo;</p>'
+        )
+
+    def test_chinese_example(self):
+        self.assertMarkdownRenders(
+            '她说："请先阅读**手册**，再运行 `import "os"`。"',
+            '<p>她说：&ldquo;请先阅读<strong>手册</strong>，再运行 '
+            '<code>import "os"</code>。&rdquo;</p>',
+            extension_configs={'smarty': {'language': 'zh-CN'}},
+        )
+
+    def test_french_example(self):
+        self.assertMarkdownRenders(
+            'Elle a dit : "Lisez le **manuel** et exécutez `import "os"`."',
+            '<p>Elle a dit : &laquo;&nbsp;Lisez le <strong>manuel</strong> et '
+            'exécutez <code>import "os"</code>.&nbsp;&raquo;</p>',
+            extension_configs={'smarty': {'language': 'fr'}},
+        )
+
+    def test_nested_quotes_across_emphasis(self):
+        self.assertMarkdownRenders(
+            '"She said **\'hello\'**."',
+            '<p>&ldquo;She said <strong>&lsquo;hello&rsquo;</strong>.&rdquo;</p>'
+        )
+
+    def test_quote_state_resets_at_paragraph_boundary(self):
+        self.assertMarkdownRenders(
+            '"unclosed\n\n"new paragraph"',
+            '<p>&ldquo;unclosed</p>\n<p>&ldquo;new paragraph&rdquo;</p>'
+        )
+
+    def test_code_spans_and_code_blocks_are_skipped(self):
+        self.assertMarkdownRenders(
+            '"See `quote "x" \'y\'`."\n\n    "code" \'code\'',
+            '<p>&ldquo;See <code>quote "x" \'y\'</code>.&rdquo;</p>\n'
+            '<pre><code>"code" \'code\'\n</code></pre>'
+        )
+
+    def test_link_target_and_title_are_skipped(self):
+        self.assertMarkdownRenders(
+            '[a "b"](<http://example.com/?q="x"> "t")',
+            '<p><a href="http://example.com/?q=&quot;x&quot;" title="t">'
+            'a &ldquo;b&rdquo;</a></p>'
+        )
+
+    def test_html_attributes_are_skipped(self):
+        self.assertMarkdownRenders(
+            '<span title="q \'x\'">a "b"</span>',
+            '<p><span title="q \'x\'">a &ldquo;b&rdquo;</span></p>'
+        )
+
+    def test_apostrophes_and_measurements(self):
+        self.assertMarkdownRenders(
+            "It's from the '80s, 5'10\", and rock 'n' roll.",
+            '<p>It&rsquo;s from the &rsquo;80s, 5&prime;10&Prime;, and '
+            'rock &rsquo;n&rsquo; roll.</p>'
+        )
+
+    def test_idempotent_typographic_punctuation(self):
+        source = (
+            'She said, &ldquo;Read the <strong>manual</strong> and run '
+            '<code>import "os"</code> first.&rdquo;'
+        )
+        md = Markdown(**self.default_kwargs)
+        output = md.convert(source)
+        self.assertEqual(md.convert(output), output)
+
+    def test_french_punctuation_is_idempotent(self):
+        source = '&laquo;&nbsp;Bonjour <strong>monde</strong>&nbsp;&raquo;'
+        kwargs = {
+            'extensions': ['smarty'],
+            'extension_configs': {'smarty': {'language': 'fr'}},
+        }
+        md = Markdown(**kwargs)
+        output = md.convert(source)
+        self.assertEqual(
+            md.convert(output),
+            '<p>&laquo;&nbsp;Bonjour <strong>monde</strong>&nbsp;&raquo;</p>'
+        )
 
 
 class TestSmartyAndToc(TestCase):

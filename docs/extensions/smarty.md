@@ -40,30 +40,68 @@ extension_configs = {
 }
 ```
 
+Language modes
+--------------
+
+Set the `language` option to `en`, `zh`, or `fr` to use language-specific
+quotation rules. BCP 47 region tags such as `zh-CN` and `fr-FR` are also
+accepted. When a language is enabled, quote pairing is tracked through normal
+inline emphasis, but the state resets at paragraph and other block boundaries.
+Code spans, code blocks, link destinations, link titles, HTML attributes, and
+stashed raw HTML never participate in quote replacement.
+
+| Language | Outer quotes | Inner quotes | Spacing |
+| -------- | ------------ | ------------ | ------- |
+| `en`     | `“ ”`        | `‘ ’`        | none |
+| `zh`     | `“ ”`        | `‘ ’`        | none |
+| `fr`     | `« »`        | `‹ ›`        | non-breaking space inside each quote |
+
+```python
+markdown.markdown(
+    'She said, "Read the **manual** and run `import "os"` first."',
+    extensions=['smarty'],
+    extension_configs={'smarty': {'language': 'en'}}
+)
+# <p>She said, &ldquo;Read the <strong>manual</strong> and run
+# <code>import "os"</code> first.&rdquo;</p>
+
+markdown.markdown(
+    '她说："请先阅读**手册**，再运行 `import "os"`。"',
+    extensions=['smarty'],
+    extension_configs={'smarty': {'language': 'zh-CN'}}
+)
+# <p>她说：&ldquo;请先阅读<strong>手册</strong>，再运行
+# <code>import "os"</code>。&rdquo;</p>
+
+markdown.markdown(
+    'Elle a dit : "Lisez le **manuel** et exécutez `import "os"`."',
+    extensions=['smarty'],
+    extension_configs={'smarty': {'language': 'fr-FR'}}
+)
+# <p>Elle a dit : &laquo;&nbsp;Lisez le <strong>manuel</strong> et
+# exécutez <code>import "os"</code>.&nbsp;&raquo;</p>
+```
+
+In language modes, apostrophes are converted to `&rsquo;`, while foot and
+inch marks after numbers are converted to `&prime;` and `&Prime;`. For
+example, `It's the '80s and 5'10"` becomes
+`It&rsquo;s the &rsquo;80s and 5&prime;10&Prime;`.
+
+Language modes only convert ASCII quote marks. Text that already contains the
+correct Unicode or entity punctuation is left unchanged when converted again.
+When `language` is not set, the legacy SmartyPants quote heuristics remain in
+use and language-specific pairing is disabled.
+
 !!! tip
     This extension re-implements the Python [SmartyPants]
     library by integrating it into the markdown parser.
-    While this does not provide any additional features,
-    it does offer a few advantages. Notably, it will not
-    try to work on highlighted code blocks (using the
-    [CodeHilite] Extension) like the third party library
-    has been known to do.
+    Integrating the conversion into the parser means quote pairing can follow
+    inline elements while still skipping code and stashed raw HTML. It will
+    also not try to work on highlighted code blocks (using the [CodeHilite]
+    Extension) like the third party library has been known to do.
 
 [SmartyPants]: https://pythonhosted.org/smartypants/
 [CodeHilite]: code_hilite.md
-
-!!! info "Note"
-
-    This extension is in __maintenance mode__.  We will continue to fix bugs
-    and keep it up-to-date with the core parser, but no new features or
-    changes in behavior will be made. If you need a feature that this
-    extension does not offer, then you have three options (1) find an
-    existing [third-party extension] which meets your needs, (2) [build your
-    own extension], or (3) fork this extension (pursuant to its licensing
-    requirements) and maintain it as a third-party extension.
-
-[third-party extension]: index.md#third-party-extensions
-[build your own extension]: api.md
 
 Usage
 -----
@@ -78,6 +116,7 @@ The following options are provided to configure the output:
 
 Option                | Default value | Description
 ------                | ------------- | -----------
+`language`            | disabled (`''`)  | language-specific quote rules: `en`, `zh`, or `fr`
 `smart_dashes`        | `True`        | whether to convert dashes
 `smart_quotes`        | `True`        | whether to convert straight quotes
 `smart_angled_quotes` | `False`       | whether to convert angled quotes

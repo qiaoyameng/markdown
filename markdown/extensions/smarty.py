@@ -85,16 +85,23 @@ for details.
 
 from __future__ import annotations
 
+import re
+
 from . import Extension
 from ..inlinepatterns import HtmlInlineProcessor, HTML_RE
-from ..treeprocessors import InlineProcessor
-from ..util import Registry
+from ..treeprocessors import InlineProcessor, Treeprocessor
+from ..util import (
+    Registry,
+    HTML_PLACEHOLDER_RE,
+    INLINE_PLACEHOLDER_RE,
+    STX,
+    ETX,
+)
 from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:  # pragma: no cover
     from markdown import Markdown
     from .. import inlinepatterns
-    import re
     import xml.etree.ElementTree as etree
 
 # Constants for quote education.
@@ -122,7 +129,23 @@ substitutions = {
     'right-single-quote': '&rsquo;',
     'left-double-quote': '&ldquo;',
     'right-double-quote': '&rdquo;',
+    'apostrophe': '&rsquo;',
+    'prime': '&prime;',
+    'double-prime': '&Prime;',
 }
+
+languageSettings = {
+    'en': {},
+    'zh': {},
+    'fr': {
+        'left-single-quote': '&lsaquo;&nbsp;',
+        'right-single-quote': '&nbsp;&rsaquo;',
+        'left-double-quote': '&laquo;&nbsp;',
+        'right-double-quote': '&nbsp;&raquo;',
+    },
+}
+
+ESCAPED_CHAR_RE = re.compile(re.escape(STX) + r'\d+' + re.escape(ETX))
 
 
 # Special case if the very first character is a quote
@@ -161,6 +184,183 @@ remainingDoubleQuotesRegex = r'"'
 HTML_STRICT_RE = HTML_RE + r'(?!\>)'
 
 
+class LanguageQuoteTreeprocessor(Treeprocessor):
+    """ Pair straight quotes using the typographic rules of a language. """
+
+    skipped_tags = {'code', 'script', 'style'}
+
+    def __init__(self, md: Markdown, substitutions: dict[str, str], language: str):
+        self.md = md
+        self.substitutions = substitutions
+        self.language = language
+
+    def run(self, root):
+        self._walk_element(root, _QuoteState(), root.tag not in self.skipped_tags)
+
+    def _walk_element(self, element, state, active):
+        if element.text:
+            element.text = self._process_text(element.text, state, active)
+        for child in element:
+            is_block = self.md.is_block_level(child.tag)
+            if is_block:
+                child_state = _QuoteState()
+                self._walk_element(
+                    child, child_state, active and child.tag not in self.skipped_tags
+                )
+                if child.tail:
+                    child.tail = self._process_text(child.tail, child_state, active)
+                state = _QuoteState()
+            else:
+                self._walk_element(
+                    child, state, active and child.tag not in self.skipped_tags
+                )
+            if child.tail and not is_block:
+                child.tail = self._process_text(child.tail, state, active)
+
+    def _process_text(self, text, state, active):
+        if not active:
+            return text
+
+        result = []
+        index = 0
+        for match in re.finditer(
+            r'%s|%s|%s' % (
+                HTML_PLACEHOLDER_RE.pattern,
+                INLINE_PLACEHOLDER_RE.pattern,
+                ESCAPED_CHAR_RE.pattern,
+            ),
+            text
+        ):
+            if match.start() > index:
+                self._process_plain_text(text[index:match.start()], state, result)
+            inline_match = INLINE_PLACEHOLDER_RE.fullmatch(match.group(0))
+            if inline_match:
+                node_id = int(inline_match.group(1))
+                node = self.md.treeprocessors['inline'].stashed_nodes.get(node_id)
+                if getattr(node, 'tag', None) in self.skipped_tags:
+                    result.append(match.group(0))
+                    index = match.end()
+                    continue
+            result.append(match.group(0))
+            index = match.end()
+        if index < len(text):
+            self._process_plain_text(text[index:], state, result)
+        return ''.join(result)
+
+    def _process_plain_text(self, text, state, result):
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char not in ('"', "'"):
+                result.append(char)
+                state.previous = char
+                index += 1
+                continue
+
+            quote_type = self._get_quote_type(char, text, index, state)
+            if quote_type is None:
+                result.append(char)
+                state.previous = char
+                index += 1
+                continue
+
+            if self.language == 'fr' and char == '"':
+                if quote_type == 'open' and index + 1 < len(text) and text[index + 1].isspace():
+                    index += 1
+                elif quote_type == 'close' and result and result[-1].isspace():
+                    result.pop()
+
+            result.append(self.md.htmlStash.store(self._get_replacement(char, quote_type)))
+            self._update_state(char, quote_type, state)
+            index += 1
+
+    def _get_quote_type(self, char, text, index, state):
+        previous = state.previous
+        following = text[index + 1] if index + 1 < len(text) else ''
+        after = text[index + 2] if index + 2 < len(text) else ''
+        following_word = following.isalnum() or following in ('_',)
+
+        if char in state.stack:
+            return 'close'
+
+        if char == "'":
+            if previous.isdigit() and not (
+                following == 's' and (not after or not after.isalnum())
+            ):
+                return 'prime'
+            if self._is_apostrophe(previous, text, index):
+                return 'apostrophe'
+        elif previous.isdigit():
+            return 'double-prime'
+
+        if char == "'":
+            if previous.isalnum() and not (not following and previous.isdigit()):
+                return 'apostrophe'
+            if following.isdigit() and self._is_decade(text, index):
+                return 'apostrophe'
+            if following_word and (not previous or not previous.isalnum()):
+                return 'open'
+            return None
+
+        return 'open'
+
+    def _is_apostrophe(self, previous, text, index):
+        following = text[index + 1] if index + 1 < len(text) else ''
+        after = text[index + 2] if index + 2 < len(text) else ''
+        if previous.isalnum() and following.isalnum():
+            return True
+        if previous.isalnum() and following == 's' and (not after or not after.isalnum()):
+            return True
+        if previous in ('"', "'") and following == 's' and (not after or not after.isalnum()):
+            return True
+        if previous.isdigit() and following == 's':
+            return True
+        if not previous.isalnum() and following == 'n' and after == "'":
+            return True
+        if following.isdigit() and self._is_decade(text, index):
+            return True
+        return False
+
+    def _is_decade(self, text, index):
+        return (
+            index + 4 <= len(text)
+            and text[index + 1:index + 3].isdigit()
+            and text[index + 3] == 's'
+            and (index + 4 == len(text) or not text[index + 4].isalnum())
+        )
+
+    def _get_replacement(self, char, quote_type):
+        if quote_type == 'apostrophe':
+            return self.substitutions['apostrophe']
+        if quote_type == 'prime':
+            return self.substitutions['prime']
+        if quote_type == 'double-prime':
+            return self.substitutions['double-prime']
+
+        direction = 'left' if quote_type == 'open' else 'right'
+        kind = 'single' if char == "'" else 'double'
+        return self.substitutions[f'{direction}-{kind}-quote']
+
+    def _update_state(self, char, quote_type, state):
+        if quote_type == 'open':
+            state.stack.append(char)
+            state.previous = char
+        elif quote_type == 'close' and char in state.stack:
+            while state.stack:
+                item = state.stack.pop()
+                if item == char:
+                    break
+            state.previous = char
+        else:
+            state.previous = char
+
+
+class _QuoteState:
+    def __init__(self):
+        self.previous = ''
+        self.stack = []
+
+
 class SubstituteTextPattern(HtmlInlineProcessor):
     def __init__(self, pattern: str, replace: Sequence[int | str | etree.Element], md: Markdown):
         """ Replaces matches with some text. """
@@ -182,6 +382,7 @@ class SmartyExtension(Extension):
     """ Add Smarty to Markdown. """
     def __init__(self, **kwargs):
         self.config = {
+            'language': ['', 'Language-specific quotation rules'],
             'smart_quotes': [True, 'Educate quotes'],
             'smart_angled_quotes': [False, 'Educate angled quotes'],
             'smart_dashes': [True, 'Educate dashes'],
@@ -190,8 +391,16 @@ class SmartyExtension(Extension):
         }
         """ Default configuration options. """
         super().__init__(**kwargs)
+        language = self.getConfig('language') or None
+        if language is not None:
+            language = language.lower().split('-', 1)[0].split('_', 1)[0]
+            if language not in languageSettings:
+                raise ValueError('Unsupported language: %s' % language)
         self.substitutions: dict[str, str] = dict(substitutions)
+        if language is not None:
+            self.substitutions.update(languageSettings[language])
         self.substitutions.update(self.getConfig('substitutions', default={}))
+        self.language = language
 
     def _addPatterns(
         self,
@@ -276,7 +485,7 @@ class SmartyExtension(Extension):
         self.inlinePatterns: Registry[inlinepatterns.InlineProcessor] = Registry()
         if configs['smart_ellipses']:
             self.educateEllipses(md)
-        if configs['smart_quotes']:
+        if configs['smart_quotes'] and self.language is None:
             self.educateQuotes(md)
         if configs['smart_angled_quotes']:
             self.educateAngledQuotes(md)
@@ -287,6 +496,12 @@ class SmartyExtension(Extension):
             self.educateDashes(md)
         inlineProcessor = InlineProcessor(md)
         inlineProcessor.inlinePatterns = self.inlinePatterns
+        if self.language is not None and configs['smart_quotes']:
+            md.treeprocessors.register(
+                LanguageQuoteTreeprocessor(md, self.substitutions, self.language),
+                'smarty-language-quotes',
+                15,
+            )
         md.treeprocessors.register(inlineProcessor, 'smarty', 6)
         md.ESCAPED_CHARS.extend(['"', "'"])
 
