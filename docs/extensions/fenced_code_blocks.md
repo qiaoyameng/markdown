@@ -99,11 +99,10 @@ not part of the list
 ```
 ````
 
-!!! warning
-
-    Fenced Code Blocks are only supported at the document root level. Therefore, they cannot be nested inside lists or
-    blockquotes. If you need to nest fenced code blocks, you may want to try the third party extension [SuperFences]
-    instead.
+Fenced code blocks can also be nested inside lists and blockquotes. The closing fence must be part of the same list
+item or blockquote. Lines which merely look like Markdown lists, blockquotes, or HTML remain literal code content.
+Blank lines and indentation within a fence are preserved, while a fence left open at the end of a container is closed
+at that container's boundary.
 
 ### Attributes
 
