@@ -592,6 +592,7 @@ class ReferenceProcessor(BlockProcessor):
             link = m.group(2).lstrip('<').rstrip('>')
             title = m.group(5) or m.group(6)
             self.parser.md.references[id] = (link, title)
+            self.parser.md._ref_diagnostics.record_definition(id)
             if block[m.end():].strip():
                 # Add any content after match back to blocks as separate block
                 blocks.insert(0, block[m.end():].lstrip('\n'))

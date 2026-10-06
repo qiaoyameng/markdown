@@ -33,6 +33,7 @@ from .postprocessors import build_postprocessors
 from .extensions import Extension
 from .serializers import to_html_string, to_xhtml_string
 from .util import BLOCK_LEVEL_ELEMENTS
+from .diagnostics import ReferenceDiagnosticsCollector, ReferenceDiagnosticsError, ReferenceDiagnostic
 
 if TYPE_CHECKING:  # pragma: no cover
     from xml.etree.ElementTree import Element
@@ -71,6 +72,9 @@ class Markdown:
         Markdown.inlinePatterns (util.Registry): A collection of [`inlinepatterns`][markdown.inlinepatterns].
         Markdown.treeprocessors (util.Registry): A collection of [`treeprocessors`][markdown.treeprocessors].
         Markdown.postprocessors (util.Registry): A collection of [`postprocessors`][markdown.postprocessors].
+        Markdown.strict_references (bool): Indicates whether [`convert`][markdown.Markdown.convert] should raise
+            a [`ReferenceDiagnosticsError`][markdown.diagnostics.ReferenceDiagnosticsError] when reference
+            diagnostics are found. Default: `False`.
 
     """
 
@@ -103,10 +107,15 @@ class Markdown:
                 * `xhtml`: Outputs XHTML style tags. Default.
                 * `html`: Outputs HTML style tags.
             tab_length (int): Length of tabs in the source. Default: `4`
+            strict_references (bool): Raise a
+                [`ReferenceDiagnosticsError`][markdown.diagnostics.ReferenceDiagnosticsError] from
+                [`convert`][markdown.Markdown.convert] when any reference diagnostics (unknown references,
+                conflicting definitions or unused definitions) are found. Default: `False`
 
         """
 
         self.tab_length: int = kwargs.get('tab_length', 4)
+        self.strict_references: bool = kwargs.get('strict_references', False)
 
         self.ESCAPED_CHARS: list[str] = [
             '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '>', '#', '+', '-', '.', '!'
@@ -122,6 +131,9 @@ class Markdown:
         self.build_parser()
 
         self.references: dict[str, tuple[str, str]] = {}
+        self._ref_diagnostics = ReferenceDiagnosticsCollector(self)
+        self._source_text: str = ''
+        self._source_lines: list[str] = []
         self.htmlStash: util.HtmlStash = util.HtmlStash()
         self.registerExtensions(extensions=kwargs.get('extensions', []),
                                 configs=kwargs.get('extension_configs', {}))
@@ -269,12 +281,25 @@ class Markdown:
         """
         self.htmlStash.reset()
         self.references.clear()
+        self._ref_diagnostics.reset()
 
         for extension in self.registeredExtensions:
             if hasattr(extension, 'reset'):
                 extension.reset()
 
         return self
+
+    @property
+    def reference_diagnostics(self) -> list[ReferenceDiagnostic]:
+        """
+        A list of [`ReferenceDiagnostic`][markdown.diagnostics.ReferenceDiagnostic] objects
+        collected while parsing the most recent document.
+
+        The diagnostics report references with no matching definition, definitions whose
+        normalized labels conflict, and definitions which are never used. They are computed
+        from the parser's own reference handling and never alter the converted output.
+        """
+        return self._ref_diagnostics.get_diagnostics()
 
     def set_output_format(self, format: str) -> Markdown:
         """
@@ -354,6 +379,10 @@ class Markdown:
             e.reason += '. -- Note: Markdown only accepts Unicode input!'
             raise
 
+        # Keep a copy of the original source so diagnostics can be located by line number.
+        self._source_text = source
+        self._source_lines = source.split("\n")
+
         # Split into lines and run the line preprocessors.
         self.lines = source.split("\n")
         for prep in self.preprocessors:
@@ -388,6 +417,11 @@ class Markdown:
         # Run the text post-processors
         for pp in self.postprocessors:
             output = pp.run(output)
+
+        if self.strict_references:
+            diagnostics = self.reference_diagnostics
+            if diagnostics:
+                raise ReferenceDiagnosticsError(diagnostics)
 
         return output.strip()
 

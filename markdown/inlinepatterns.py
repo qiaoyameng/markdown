@@ -951,9 +951,11 @@ class ReferenceInlineProcessor(LinkInlineProcessor):
         # Clean up line breaks in id
         id = self.NEWLINE_CLEANUP_RE.sub(' ', id)
         if id not in self.md.references:  # ignore undefined refs
+            self.md._ref_diagnostics.record_unknown(id, data[m.start(0):end])
             return None, m.start(0), end
 
         href, title = self.md.references[id]
+        self.md._ref_diagnostics.record_usage(id)
 
         return self.makeTag(href, title, text), m.start(0), end
 
