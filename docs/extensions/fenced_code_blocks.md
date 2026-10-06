@@ -99,11 +99,31 @@ not part of the list
 ```
 ````
 
-!!! warning
+Fenced code blocks are supported inside list items and blockquotes. The opening and closing fences must use the same
+marker and be enclosed by the same container prefix. Markdown syntax on lines within the code block remains literal,
+including lines which resemble list items, blockquotes, or HTML. Blank lines are preserved as part of the code.
 
-    Fenced Code Blocks are only supported at the document root level. Therefore, they cannot be nested inside lists or
-    blockquotes. If you need to nest fenced code blocks, you may want to try the third party extension [SuperFences]
-    instead.
+```` md-render
+---
+extensions: [fenced_code]
+---
+> A blockquote.
+>
+> ```python
+> def example():
+>     # List-like and quote-like lines remain code.
+>     * not a list
+> ```
+
+1. A list item.
+
+    ```
+    Fenced code nested in the list.
+    ```
+````
+
+When a fence is not closed within the container which opened it, the fence markers are treated as ordinary Markdown
+text rather than as code block delimiters.
 
 ### Attributes
 

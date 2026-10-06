@@ -160,6 +160,258 @@ class TestFencedCode(TestCase):
             extensions=['fenced_code']
         )
 
+    def test_fenced_code_in_nested_list(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                - outer
+                    - inner
+
+                        ```python
+                        * literal list item
+                        > literal quote
+                        <p>literal html</p>
+                        ```
+                '''
+            ),
+            self.dedent(
+                '''
+                <ul>
+                <li>outer<ul>
+                <li>
+                <p>inner</p>
+                <pre><code class="language-python">* literal list item
+                &gt; literal quote
+                &lt;p&gt;literal html&lt;/p&gt;
+                </code></pre>
+                </li>
+                </ul>
+                </li>
+                </ul>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_in_blockquote(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                > before
+                >
+                > ~~~~python
+                > - literal list item
+                > # literal heading
+                > ~~~
+                > ~~~~
+                >
+                > after
+                '''
+            ),
+            self.dedent(
+                '''
+                <blockquote>
+                <p>before</p>
+                <pre><code class="language-python">- literal list item
+                # literal heading
+                ~~~
+                </code></pre>
+                <p>after</p>
+                </blockquote>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_in_list_preserves_blank_lines(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                - item
+
+                    ```
+
+                    first
+
+                    ```
+                '''
+            ),
+            self.dedent(
+                '''
+                <ul>
+                <li>
+                <p>item</p>
+                <pre><code>
+                first
+
+                </code></pre>
+                </li>
+                </ul>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_in_container_strips_fence_indent(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                > ```
+                >    indented
+                >      extra
+                > ```
+                '''
+            ),
+            self.dedent(
+                '''
+                <blockquote>
+                <pre><code>indented
+                  extra
+                </code></pre>
+                </blockquote>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_in_list_respects_container_boundary(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                - item
+
+                    ```
+                    code
+                ```
+
+                paragraph
+                '''
+            ),
+            self.dedent(
+                '''
+                <ul>
+                <li>
+                <p>item</p>
+                <p><code>code</code></p>
+                </li>
+                </ul>
+                <p>paragraph</p>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_in_blockquote_respects_container_boundary(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                > ```
+                > code
+                ```
+
+                paragraph
+                '''
+            ),
+            self.dedent(
+                '''
+                <blockquote>
+                <p><code>code</code></p>
+                </blockquote>
+                <p>paragraph</p>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_after_list_keeps_sibling_structure(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                - item
+
+                    ```
+                    code
+                    ```
+
+                paragraph
+                '''
+            ),
+            self.dedent(
+                '''
+                <ul>
+                <li>
+                <p>item</p>
+                <pre><code>code
+                </code></pre>
+                </li>
+                </ul>
+                <p>paragraph</p>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_literal_list_line_does_not_change_list_state(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                - item
+
+                    ```
+                    * literal list item
+                    ```
+
+                > another block
+                '''
+            ),
+            self.dedent(
+                '''
+                <ul>
+                <li>
+                <p>item</p>
+                <pre><code>* literal list item
+                </code></pre>
+                </li>
+                </ul>
+                <blockquote>
+                <p>another block</p>
+                </blockquote>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
+    def test_fenced_code_in_nested_list_and_blockquote(self):
+        self.assertMarkdownRenders(
+            self.dedent(
+                '''
+                - outer
+                    - inner
+
+                        > ```python
+                        > - literal list item
+                        > ```
+                '''
+            ),
+            self.dedent(
+                '''
+                <ul>
+                <li>outer<ul>
+                <li>
+                <p>inner</p>
+                <blockquote>
+                <pre><code class="language-python">- literal list item
+                </code></pre>
+                </blockquote>
+                </li>
+                </ul>
+                </li>
+                </ul>
+                '''
+            ),
+            extensions=['fenced_code']
+        )
+
     def testFencedLanguageInAttr(self):
         self.assertMarkdownRenders(
             self.dedent(
